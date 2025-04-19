@@ -1,0 +1,10 @@
+# Telegram bot API wrapper
+pyTelegramBotAPI==4.14.0
+# For relative date calculations
+python-dateutil==2.8.2
+# For thread-safe file I/O
+filelock==3.12.2
+# For system resource monitoring
+psutil==5.9.5
+# Timezone support
+pytz==2023.3
