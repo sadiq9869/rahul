@@ -79,7 +79,7 @@ def save_keys():
 def create_random_key(length=10):
     characters = string.ascii_letters + string.digits
     random_key = ''.join(random.choice(characters) for _ in range(length))
-    custom_key = f"`Rahul_sadiq{random_key.upper()}`"
+    custom_key = f"Rahul_sadiq{random_key.upper()}"
     return custom_key
 
 def add_time_to_current_date(years=0, months=0, days=0, hours=0, minutes=0, seconds=0):
