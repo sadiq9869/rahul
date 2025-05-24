@@ -1358,29 +1358,29 @@ def show_recent_logs(message):
     if not is_overlord(user_id, username):
         response = "🚫 <b>Access Denied:</b> <i>Overlord only command</i> 🚫\n━━━━━━━"
         safe_reply(bot, message, response)
-        log_action(user_id, username, "/logs", f"Command: {command}", response)
+        log_action(user_id, username, "/logs", "", response)
         return
     try:
-        with open(LOG_FILE, "r", encoding='utf-8') as file:
-            logs = file.readlines()
-        if not logs:
+        if not os.path.exists(LOG_FILE) or os.path.getsize(LOG_FILE) == 0:
             response = "📜 <b>No logs found!</b> 📜\n━━━━━━━"
             safe_reply(bot, message, response)
             log_action(user_id, username, "/logs", "", response)
             return
-        # Get the last 5 log entries (or fewer if less than 5 exist)
-        recent_logs = logs[-5:] if len(logs) >= 5 else logs
-        response = "📜 <b>Recent Logs</b> 📜\n"
-        for log_entry in recent_logs:
-            response += f"<pre>{log_entry}</pre>\n"
-        response += "━━━━━━━"
-        safe_reply(bot, message, response)
-        log_action(user_id, username, "/logs", "", response)
+        with open(LOG_FILE, "rb") as file:
+            response = "📜 <b>Sending full log file...</b> 📜\n━━━━━━━"
+            safe_reply(bot, message, response)
+            bot.send_document(
+                message.chat.id,
+                file,
+                caption=append_compulsory_message("📜 <b>Full Log File</b> 📜\n<b>Requested by:</b> <i>@{username}</i>\n<b>Timestamp:</b> <i>{}</i>\n━━━━━━━".format(datetime.datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p'))),
+                parse_mode="HTML"
+            )
+        log_action(user_id, username, "/logs", "Sent full log file", response)
     except Exception as e:
-        response = f"❌ <b>Error reading logs:</b> <i>{str(e)}</i> ❌\n━━━━━━━"
+        response = f"❌ <b>Error sending logs:</b> <i>{str(e)}</i> ❌\n━━━━━━━"
         safe_reply(bot, message, response)
         log_action(user_id, username, "/logs", "", response, str(e))
-
+        
 @bot.message_handler(commands=['users'])
 def list_users(message):
     user_id = str(message.from_user.id)
