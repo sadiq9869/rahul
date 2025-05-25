@@ -193,5 +193,17 @@ int main(int argc, char* argv[]) {
     std::cout << "[*] Total Data Sent       : " << std::fixed << std::setprecision(2) << totalDataMB << " MB\n" << RESET;
     std::cout << MAGENTA << "\nPowered by @Rohan2349 & @Sadiq9869 - DM for custom tools" << RESET << "\n";
 
+    
+    // Save stats to file for Python bot
+    std::ofstream statsFile("attack_stats.txt");
+    if (statsFile.is_open()) {
+        statsFile << "sent=" << totalPacketsSent << "\n";
+        statsFile << "recv=" << totalPacketsReceived << "\n";
+        statsFile << "data=" << std::fixed << std::setprecision(2) << totalDataMB << "\n";
+        statsFile.close();
+    } else {
+        std::cerr << RED << "[!] Failed to write stats to attack_stats.txt" << RESET << "\n";
+    }
+
     return 0;
 }
