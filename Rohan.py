@@ -628,7 +628,7 @@ def handle_trial(message):
     now = datetime.datetime.now()
     timestamp = time.time()
 
-    trial_key = "Trial"
+    trial_key = "Rahul_sadiq-Trial"
     duration = 3600  # 1 hour trial
     hour = now.hour
     slot = "subha" if 5 <= hour < 17 else "raat"
@@ -644,7 +644,7 @@ def handle_trial(message):
         remaining = int(active_key["expiry"] - timestamp)
         mins = remaining // 60
         safe_reply(bot, message,
-            f"🔑 Trial key already active:\n<code>{trial_key}</code>\n⏳ Expires in <b>{mins} minutes</b>",
+            f"<b><i>🔑 Trial key already active:</i></b>\n<code><b><i>{trial_key}</i></b></code>\n⏳ <b>{mins} minutes left</b>",
             parse_mode="HTML")
         return
 
@@ -691,7 +691,7 @@ def handle_trial(message):
 
     # Reply and log
     safe_reply(bot, message,
-        f"✅ <b>{slot}</b> trial key generated:\n<code>{trial_key}</code>\n⏳ Valid for 1 hour.",
+        f"<b><i>✅ {slot} trial key generated!</i></b>\n<code><b><i>{trial_key}</i></b></code>\n⏳ <b>Valid for 1 hour.</b>",
         parse_mode="HTML")
     log_action(user_id, username, "/trial", f"Generated {slot} trial", trial_key)
     
@@ -1436,7 +1436,7 @@ def redeem_key(message):
             safe_reply(bot, message, response)
             log_action(user_id, username, "/redeem", f"Key: {key}", response)
             return
-        if keys[key]["context"] != chat_type:
+        if keys[key].get("context") and keys[key]["context"] != chat_type:
             response = f"❌ <b>This key is for {keys[key]['context'].capitalize()} use only!</b> <i>Use it in a {keys[key]['context']} chat.</i> ❌\n━━━━━━━"
             safe_reply(bot, message, response)
             log_action(user_id, username, "/redeem", f"Key: {key}", response)
